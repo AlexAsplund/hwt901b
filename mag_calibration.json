@@ -1,0 +1,12 @@
+{
+  "hard_iron": [19, -37, 23],
+  "soft_iron": [
+    [0.99928, 0.00494, -0.00809],
+    [0.00494, 1.01548, -0.01996],
+    [-0.00809, -0.01996, 0.98594]
+  ],
+  "field_strength": 3279.7,
+  "heading_offset_deg": 0.0,
+  "applied_in": "software",
+  "note": "Module HxOFFSET registers are zeroed; apply full hard+soft iron here. A fixed trim was removed: the heading error is direction-dependent (+27 deg at S, -16 deg at N), indicating local ferrous distortion. Recalibrate (magfit) in the sensor's final operating position to fix it."
+}

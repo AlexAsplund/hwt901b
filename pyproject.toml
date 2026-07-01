@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hwt901b"
+version = "0.1.0"
+description = "Dependency-light driver and calibration toolkit for the WitMotion HWT901B-TTL 9/10-axis AHRS"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "iceronswe" }]
+keywords = ["witmotion", "hwt901b", "imu", "ahrs", "magnetometer",
+            "accelerometer", "gyroscope", "serial", "calibration"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: System :: Hardware :: Hardware Drivers",
+    "Intended Audience :: Developers",
+]
+# Core has NO runtime dependencies. Serial support is an optional extra.
+dependencies = []
+
+[project.optional-dependencies]
+serial = ["pyserial>=3.4"]
+dev = ["pyserial>=3.4", "pytest>=7"]
+
+[project.scripts]
+hwt901b = "hwt901b.cli:main"
+
+[project.urls]
+Documentation = "https://wit-motion.gitbook.io/witmotion-sdk"
+
+[tool.setuptools.packages.find]
+include = ["hwt901b*"]
