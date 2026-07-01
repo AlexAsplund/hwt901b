@@ -189,7 +189,7 @@ class HeadingStabilizer:
     expected_field:
         Reference calibrated field magnitude (raw sensor units). Pass the
         ``field_strength`` from your magnetometer calibration for best results.
-        If ``None`` it is learned from the first clean samples.
+        If ``None`` it is learned from the first clean non-zero samples.
     field_tolerance:
         Fractional band before the magnitude gate starts down-weighting the
         magnetometer (0.15 = 15%).
@@ -334,9 +334,17 @@ class HeadingStabilizer:
         if mag is None:
             return 0.0, float("nan"), float("nan")
         fmag = _norm(mag)
-        if self.expected_field is None:
+        if self.expected_field is None and fmag > 0.0:
             self.expected_field = fmag
-        ratio = fmag / self.expected_field if self.expected_field else float("nan")
+        if not self.expected_field:
+            # No usable field reference (zero-magnitude sample at startup, or a
+            # zero expected_field): the magnetometer cannot be trusted this
+            # step. Keep expected_field unlearned (None) so a later good sample
+            # can set it. Dip does not depend on the reference, so still report
+            # it -- but do not learn expected_dip from an untrusted sample.
+            dip = magnetic_dip_deg(mag, gravity) if gravity is not None else float("nan")
+            return 0.0, float("nan"), dip
+        ratio = fmag / self.expected_field
         mag_dev = abs(fmag - self.expected_field) / self.expected_field
         t = _soft_gate(mag_dev, self.field_tolerance)
 

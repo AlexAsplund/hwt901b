@@ -190,8 +190,9 @@ def test_nmea_from_state_uses_fused_yaw():
     # yaw is negated for compass: -(-90) = 90 magnetic; true = 10 - (-90) = 100
     assert "$HCHDM,90.0,M*" in joined
     assert "$HCHDT,100.0,T*" in joined
-    # gyro z 3 deg/s -> 180 deg/min
-    assert "$TIROT,180.0,A*" in joined
+    # gyro z +3 deg/s is a CCW (port) turn; NMEA ROT negative = bow to port,
+    # so -3 deg/s * 60 = -180 deg/min
+    assert "$TIROT,-180.0,A*" in joined
     # every emitted sentence must carry a valid checksum
     for line in out:
         body, cs = line[1:].split("*")

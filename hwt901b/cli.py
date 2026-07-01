@@ -49,6 +49,24 @@ def _parse_mount(spec: str):
         raise SystemExit(f"--mount: {exc}")
 
 
+def _load_mag_cal(path):
+    """Load a mag calibration JSON. Returns (MagCalibration, field) or (None, None)."""
+    import json
+    import os
+    from .calibration import MagCalibration
+    if not path or not os.path.exists(path):
+        return None, None
+    with open(path) as f:
+        data = json.load(f)
+    field = data.get("field_strength")
+    mag_cal = MagCalibration(
+        hard_iron=tuple(data.get("hard_iron", [0, 0, 0])),
+        soft_iron=tuple(tuple(r) for r in data.get(
+            "soft_iron", [[1, 0, 0], [0, 1, 0], [0, 0, 1]])),
+        field_strength=field or 0.0)
+    return mag_cal, field
+
+
 def cmd_monitor(args: argparse.Namespace) -> int:
     with HWT901B.open(args.port, baudrate=args.baud,
                       mount=_parse_mount(args.mount)) as imu:
@@ -191,7 +209,8 @@ def cmd_config(args: argparse.Namespace) -> int:
                     1: P.OutputRate.HZ_1, 2: P.OutputRate.HZ_2,
                     5: P.OutputRate.HZ_5, 10: P.OutputRate.HZ_10,
                     20: P.OutputRate.HZ_20, 50: P.OutputRate.HZ_50,
-                    100: P.OutputRate.HZ_100, 200: P.OutputRate.HZ_200}[args.rate]
+                    100: P.OutputRate.HZ_100, 125: P.OutputRate.HZ_125,
+                    200: P.OutputRate.HZ_200}[args.rate]
             imu.set_output_rate(rate)
             print(f"output rate -> {args.rate} Hz")
         if args.set_baud is not None:
@@ -216,8 +235,6 @@ def cmd_nmea(args: argparse.Namespace) -> int:
     By default the heading is *stabilized* (magnetic-disturbance gating + optional
     GPS COG aiding); pass --no-stabilize to emit the raw module fused yaw instead.
     """
-    import json
-    import os
     import time
 
     sock = None
@@ -253,18 +270,8 @@ def cmd_nmea(args: argparse.Namespace) -> int:
 
     # --- stabilized mode (default) -----------------------------------------
     from .stabilizer import HeadingStabilizer
-    from .calibration import MagCalibration
 
-    mag_cal = None
-    field = None
-    if args.cal and os.path.exists(args.cal):
-        data = json.load(open(args.cal))
-        field = data.get("field_strength")
-        mag_cal = MagCalibration(
-            hard_iron=tuple(data.get("hard_iron", [0, 0, 0])),
-            soft_iron=tuple(tuple(r) for r in data.get(
-                "soft_iron", [[1, 0, 0], [0, 1, 0], [0, 0, 1]])),
-            field_strength=field or 0.0)
+    mag_cal, field = _load_mag_cal(args.cal)
     mount = _parse_mount(args.mount)
     if mag_cal is not None and mount is not None:
         mag_cal = mag_cal.rotated(mount)   # match the axis remap
@@ -279,65 +286,60 @@ def cmd_nmea(args: argparse.Namespace) -> int:
     gps_buf = ""
     cog = spd = None
 
-    with HWT901B.open(args.port, baudrate=args.baud, timeout=0.02,
-                      mount=mount) as imu:
-        imu.set_outputs(P.RswBit.ACCELERATION, P.RswBit.ANGULAR_VELOCITY,
-                        P.RswBit.ANGLE, P.RswBit.MAGNETIC)
-        last_t = time.monotonic()
-        next_emit = 0.0
-        try:
-            while True:
-                imu.poll()
-                if gps is not None:
-                    d = gps.read(512)
-                    if d:
-                        gps_buf += d.decode("ascii", "ignore")
-                        while "\n" in gps_buf:
-                            line, gps_buf = gps_buf.split("\n", 1)
-                            f = parse_nmea_gps(line)
-                            if f and f.valid and f.course_deg is not None:
-                                cog, spd = f.course_deg, f.speed_knots
-                now = time.monotonic()
-                dt = now - last_t
-                last_t = now
-                out = stab.update_from_state(
-                    imu.state, dt, mag_calibration=mag_cal,
-                    cog_deg=cog, speed=spd, declination_deg=args.variation)
-                if out is not None and now >= next_emit:
-                    next_emit = now + 1.0 / args.rate
-                    st = imu.state
-                    rot_dpm = (st.angular_velocity.z * 60.0
-                               if st.angular_velocity else None)
-                    roll = st.angle.roll if st.angle else None
-                    pitch = st.angle.pitch if st.angle else None
-                    emit(N.sentences_from_heading(
-                        out.heading, variation_deg=args.variation,
-                        roll_deg=roll, pitch_deg=pitch,
-                        rate_of_turn_dpm=rot_dpm, include=include))
-        except KeyboardInterrupt:
-            pass
+    try:
+        with HWT901B.open(args.port, baudrate=args.baud, timeout=0.02,
+                          mount=mount) as imu:
+            imu.set_outputs(P.RswBit.ACCELERATION, P.RswBit.ANGULAR_VELOCITY,
+                            P.RswBit.ANGLE, P.RswBit.MAGNETIC)
+            last_t = time.monotonic()
+            next_emit = 0.0
+            try:
+                while True:
+                    imu.poll()
+                    if gps is not None:
+                        d = gps.read(512)
+                        if d:
+                            gps_buf += d.decode("ascii", "ignore")
+                            while "\n" in gps_buf:
+                                line, gps_buf = gps_buf.split("\n", 1)
+                                f = parse_nmea_gps(line)
+                                if f and f.valid and f.course_deg is not None:
+                                    cog, spd = f.course_deg, f.speed_knots
+                    now = time.monotonic()
+                    dt = now - last_t
+                    last_t = now
+                    out = stab.update_from_state(
+                        imu.state, dt, mag_calibration=mag_cal,
+                        cog_deg=cog, speed=spd, declination_deg=args.variation)
+                    if out is not None and now >= next_emit:
+                        next_emit = now + 1.0 / args.rate
+                        st = imu.state
+                        # Gyro Z is CCW-positive; NMEA ROT is negative for a
+                        # turn to port (CCW), so negate.
+                        rot_dpm = (-st.angular_velocity.z * 60.0
+                                   if st.angular_velocity else None)
+                        roll = st.angle.roll if st.angle else None
+                        pitch = st.angle.pitch if st.angle else None
+                        emit(N.sentences_from_heading(
+                            out.heading, variation_deg=args.variation,
+                            roll_deg=roll, pitch_deg=pitch,
+                            rate_of_turn_dpm=rot_dpm, include=include))
+            except KeyboardInterrupt:
+                pass
+    finally:
+        if gps is not None:
+            gps.close()
     return 0
 
 
 def cmd_profile(args: argparse.Namespace) -> int:
     """Profile real motion (calm -> small/medium waves) and recommend tuning."""
     import json
-    import os
     import time
     from .profiler import WaveProfiler
     from .stabilizer import HeadingStabilizer
-    from .calibration import MagCalibration
 
-    mag_cal = field = None
-    if args.cal and os.path.exists(args.cal):
-        data = json.load(open(args.cal))
-        field = data.get("field_strength")
-        mag_cal = MagCalibration(
-            hard_iron=tuple(data.get("hard_iron", [0, 0, 0])),
-            soft_iron=tuple(tuple(r) for r in data.get(
-                "soft_iron", [[1, 0, 0], [0, 1, 0], [0, 0, 1]])),
-            field_strength=field or 0.0)
-
+    mag_cal, field = _load_mag_cal(args.cal)
     mount = _parse_mount(args.mount)
     if mag_cal is not None and mount is not None:
         mag_cal = mag_cal.rotated(mount)   # match the axis remap
@@ -353,6 +355,7 @@ def cmd_profile(args: argparse.Namespace) -> int:
               "whatever small/medium waves you can find (wakes, chop).")
         last = time.monotonic()
         t0 = last
+        next_status = t0
         try:
             while time.monotonic() - t0 < args.minutes * 60:
                 imu.poll()
@@ -363,7 +366,8 @@ def cmd_profile(args: argparse.Namespace) -> int:
                                              mag_calibration=mag_cal)
                 hdg = out.heading if out else None
                 prof.feed_from_state(imu.state, hdg, dt)
-                if int(now - t0) % 15 == 0:
+                if now >= next_status:
+                    next_status = now + 15.0
                     sys.stdout.write(f"\r  {int(now-t0):4d}s  samples={prof._n}"
                                      "   ")
                     sys.stdout.flush()
@@ -401,27 +405,16 @@ def _load_profile_kwargs(path):
     from .profiler import WaveProfile
     if not path or not os.path.exists(path):
         return {}
-    return WaveProfile.from_dict(json.load(open(path))).stabilizer_kwargs()
+    with open(path) as f:
+        data = json.load(f)
+    return WaveProfile.from_dict(data).stabilizer_kwargs()
 
 
 def cmd_stabilized(args: argparse.Namespace) -> int:
     """Stabilized heading: fused yaw + magnetic gating + optional NMEA GPS COG."""
-    import json
-    import os
     from .stabilizer import HeadingStabilizer
-    from .calibration import MagCalibration
 
-    mag_cal = None
-    field = None
-    if args.cal and os.path.exists(args.cal):
-        data = json.load(open(args.cal))
-        field = data.get("field_strength")
-        mag_cal = MagCalibration(
-            hard_iron=tuple(data.get("hard_iron", [0, 0, 0])),
-            soft_iron=tuple(tuple(r) for r in data.get(
-                "soft_iron", [[1, 0, 0], [0, 1, 0], [0, 0, 1]])),
-            field_strength=field or 0.0)
-
+    mag_cal, field = _load_mag_cal(args.cal)
     mount = _parse_mount(args.mount)
     if mag_cal is not None and mount is not None:
         mag_cal = mag_cal.rotated(mount)   # match the axis remap
@@ -438,39 +431,43 @@ def cmd_stabilized(args: argparse.Namespace) -> int:
     gps_buf = ""
     cog = spd = None
 
-    with HWT901B.open(args.port, baudrate=args.baud, timeout=0.02,
-                      mount=mount) as imu:
-        imu.set_outputs(P.RswBit.ACCELERATION, P.RswBit.ANGULAR_VELOCITY,
-                        P.RswBit.ANGLE, P.RswBit.MAGNETIC)
-        last_t = time.monotonic()
-        try:
-            while True:
-                imu.poll()
-                if gps is not None:
-                    data = gps.read(512)
-                    if data:
-                        gps_buf += data.decode("ascii", "ignore")
-                        while "\n" in gps_buf:
-                            line, gps_buf = gps_buf.split("\n", 1)
-                            f = parse_nmea_gps(line)
-                            if f and f.valid and f.course_deg is not None:
-                                cog, spd = f.course_deg, f.speed_knots
-                now = time.monotonic()
-                dt = now - last_t
-                last_t = now
-                out = stab.update_from_state(
-                    imu.state, dt, mag_calibration=mag_cal,
-                    cog_deg=cog, speed=spd, declination_deg=args.declination)
-                if out is not None:
-                    flag = "COAST" if out.coasting else "     "
-                    sys.stdout.write(
-                        f"\rheading {out.heading:6.1f}  {flag}  "
-                        f"trust {out.mag_trust:4.2f}  field {out.field_ratio:4.2f}x "
-                        f" dip {out.dip_deg:5.1f}  cogW {out.cog_weight:4.2f}   ")
-                    sys.stdout.flush()
-                time.sleep(1.0 / args.rate)
-        except KeyboardInterrupt:
-            print()
+    try:
+        with HWT901B.open(args.port, baudrate=args.baud, timeout=0.02,
+                          mount=mount) as imu:
+            imu.set_outputs(P.RswBit.ACCELERATION, P.RswBit.ANGULAR_VELOCITY,
+                            P.RswBit.ANGLE, P.RswBit.MAGNETIC)
+            last_t = time.monotonic()
+            try:
+                while True:
+                    imu.poll()
+                    if gps is not None:
+                        data = gps.read(512)
+                        if data:
+                            gps_buf += data.decode("ascii", "ignore")
+                            while "\n" in gps_buf:
+                                line, gps_buf = gps_buf.split("\n", 1)
+                                f = parse_nmea_gps(line)
+                                if f and f.valid and f.course_deg is not None:
+                                    cog, spd = f.course_deg, f.speed_knots
+                    now = time.monotonic()
+                    dt = now - last_t
+                    last_t = now
+                    out = stab.update_from_state(
+                        imu.state, dt, mag_calibration=mag_cal,
+                        cog_deg=cog, speed=spd, declination_deg=args.declination)
+                    if out is not None:
+                        flag = "COAST" if out.coasting else "     "
+                        sys.stdout.write(
+                            f"\rheading {out.heading:6.1f}  {flag}  "
+                            f"trust {out.mag_trust:4.2f}  field {out.field_ratio:4.2f}x "
+                            f" dip {out.dip_deg:5.1f}  cogW {out.cog_weight:4.2f}   ")
+                        sys.stdout.flush()
+                    time.sleep(1.0 / args.rate)
+            except KeyboardInterrupt:
+                print()
+    finally:
+        if gps is not None:
+            gps.close()
     return 0
 
 
@@ -535,7 +532,7 @@ def build_parser() -> argparse.ArgumentParser:
     g = sub.add_parser("config", help="change module configuration")
     _add_common(g)
     g.add_argument("--rate", type=float,
-                   choices=[0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200],
+                   choices=[0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 125, 200],
                    help="output rate in Hz")
     g.add_argument("--set-baud", type=int,
                    choices=[4800, 9600, 19200, 38400, 57600, 115200, 230400])

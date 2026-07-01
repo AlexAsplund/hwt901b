@@ -38,7 +38,8 @@ def load_mag_calibration(cal_path):
     """Build a MagCalibration from the json file, or (None, None) if absent."""
     if not os.path.exists(cal_path):
         return None, None
-    data = json.load(open(cal_path))
+    with open(cal_path) as f:
+        data = json.load(f)
     cal = MagCalibration(
         hard_iron=tuple(data.get("hard_iron", [0, 0, 0])),
         soft_iron=tuple(tuple(r) for r in

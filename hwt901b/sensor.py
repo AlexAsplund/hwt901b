@@ -9,14 +9,12 @@ calibration commands from the WIT protocol behind readable method names.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Callable, Iterator, Optional
 
 from . import protocol as P
 from .transport import SerialTransport, Transport
 
-# How long the module leaves its registers unlocked after the unlock command.
-_UNLOCK_WINDOW_S = 10.0
 # Recommended settling time between consecutive register writes.
 _WRITE_GAP_S = 0.05
 
@@ -154,17 +152,18 @@ class HWT901B:
         Add your local declination for true (vs magnetic) north.
         """
         from .calibration import yaw_to_heading
-        state = self.read_state(timeout)
-        if state.angle is None:
-            raise TimeoutError("no fused angle packet received")
-        return yaw_to_heading(state.angle.yaw, declination_deg)
+        deadline = self._monotonic() + timeout
+        while self._monotonic() < deadline:
+            self.poll()
+            if self.state.angle is not None:
+                return yaw_to_heading(self.state.angle.yaw, declination_deg)
+        raise TimeoutError("no fused angle packet received within timeout")
 
     def frames(self, size: int = 256) -> Iterator[P.RawFrame]:
         """Yield raw verified frames as they arrive (low-level access)."""
         while True:
             data = self._t.read(size)
             if not data:
-                yield from ()
                 continue
             yield from self._parser.feed(data)
 
@@ -226,6 +225,8 @@ class HWT901B:
 
         Returns the four signed int16 values from the 0x5F response.
         """
+        # Drop any stale, unconsumed response so it cannot satisfy this request.
+        self.state.last_register_read = None
         self._send(P.read_command(register))
         deadline = self._monotonic() + timeout
         while self._monotonic() < deadline:

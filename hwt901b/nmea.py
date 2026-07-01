@@ -155,6 +155,8 @@ def sentences_from_state(
         if "xdr" in include:
             out.append(xdr_attitude(state.angle.roll, state.angle.pitch))
     if "rot" in include and state.angular_velocity is not None:
-        # Gyro Z (deg/s) -> deg/min. Yaw rate is the turn rate.
-        out.append(rot(state.angular_velocity.z * 60.0))
+        # Gyro Z (deg/s) -> deg/min. Gyro Z is CCW-positive, but NMEA ROT is
+        # negative for a bow-to-port (CCW) turn, so the compass-heading rate
+        # is -gyro_z (same sign flip as the heading above).
+        out.append(rot(-state.angular_velocity.z * 60.0))
     return out

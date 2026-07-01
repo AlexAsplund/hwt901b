@@ -31,9 +31,9 @@ References
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import IntEnum
-from typing import Iterator, Optional
+from typing import Iterator
 
 # --------------------------------------------------------------------------- #
 # Framing constants

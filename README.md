@@ -499,7 +499,7 @@ Sources:
 ## Tests
 
 ```bash
-python -m pytest        # 14 hardware-free tests (framing, decode, calibration)
+python -m pytest        # hardware-free tests (framing, decode, calibration, stabilizer)
 ```
 
 ## License
